@@ -64,29 +64,20 @@ static struct inode_operations lfs_inode_ops = {
 	.lookup = lfs_lookup,
 };
 
-struct inode *lfs_get_inode(struct super_block *sb,
-			const struct inode *dir, umode_t mode,
-			dev_t dev)
+struct lfs_inode *lfs_get_inode(struct super_block *sb, unsigned int inode_no)
 {
-	struct inode *inode = new_inode(sb);
-	if(inode) {
-		inode->i_ino = get_next_ino();
-		inode_init_owner(inode, dir, mode);
-		inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
-
-		switch(mode & S_IFMT) {
-			case S_IFDIR:
-				inc_nlink(inode);
-				break;
-			case S_IFREG:
-			case S_IFLNK:
-			default:
-				printk(KERN_ERR "Only root can have an inode\n");
-				return NULL;
-				break;
-		}
+	struct lfs_super_block *lfs_sb = LFS_SB(sb);
+	struct lfs_inode *lfs_inode = NULL;
+	int i;
+	struct buffer_head *bh;
+	bh = sb_bread(sb, LFS_INODESTORE_BLOCK_NO);
+	lfs_inode = (struct lfs_inode *) bh->b_data;
+	for(i = 0; i < lfs_sb->inodes_count; i++) {
+		if(lfs_inode->inode_no == inode_no)
+			return lfs_inode;
+		lfs_inode++;
 	}
-	return inode;
+	return NULL;
 }
 
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
@@ -119,6 +110,7 @@ int lfs_fill_super(struct super_block *sb, void *data, int silent)
 	root_inode->i_atime = root_inode->i_mtime = root_inode->i_ctime = CURRENT_TIME;
 	root_inode->i_private = &(sb_disk->root_inode);
 
+	root_inode->i_private = lfs_get_inode(sb, LFS_ROOTDIR_INODE_NO);
 	sb->s_root = d_make_root(root_inode);
 	if(!sb->s_root)
 		return -ENOMEM;
