@@ -9,6 +9,8 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 
+#include "lfs.h"
+
 
 static int lfs_iterate(struct file *filp, void *dirent, filldir_t filldir)
 {
@@ -60,7 +62,7 @@ struct inode *lfs_get_inode(struct super_block *sb,
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *inode;
-	sb->s_magic = 0x10032013; // A number that will id the fs
+	sb->s_magic = LFS_MAGIC; // A number that will id the fs
 	
 	inode = lfs_get_inode(sb, NULL, S_IFDIR, 0);
 	inode->i_op = &lfs_inode_ops;
