@@ -220,6 +220,38 @@ ssize_t lfs_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos)
 	return nbytes;
 }
 
+int lfs_inode_save(struct super_block *sb, struct lfs_inode *inode)
+{
+	struct lfs_inode *iter;
+	struct buffer_head *bh;
+	int ret = 0;
+	bh = sb_bread(sb, LFS_INODESTORE_BLOCK_NO);
+	BUG_ON(!bh);
+	if(mutex_lock_interruptible(&lfs_sb_lock)) {
+		lfs_trace("lfs_sb_lock\n");
+		ret = -EINTR;
+		goto exit;
+	}
+	iter = lfs_inode_search(sb, (struct lfs_inode *)bh->b_data, inode);
+	if(likely(iter)) {
+		memcpy(iter, lfs_inode, sizeof(struct lfs_inode));
+		printk(KERN_INFO "INODE updated\n");
+		mark_buffer_dirty(bh);
+		sync_dirty_buffer(bh);
+	} else {
+		printk(KERN_ERR "INODE update failed\n");
+		ret = -EIO;
+		goto unlock;
+	}
+	brelse(bh);
+unlock:
+	mutex_unlock(&lfs_sb_lock);
+exit:
+	return ret;
+}
+
+
+
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *root_inode;
