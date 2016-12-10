@@ -8,6 +8,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/buffer_head.h>
 
 #include "lfs.h"
 
@@ -62,6 +63,20 @@ struct inode *lfs_get_inode(struct super_block *sb,
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *inode;
+	struct buffer_head *bh;
+	struct lfs_super_block *sb_disk;
+	bh = sb_bread(sb, 0);
+	sb_disk = (struct lfs_super_block *)bh->b_data;
+	printk(KERN_INFO "Magic num read :[%d]\n", sb_disk->magic);
+	if(unlikely(sb_disk->magic != LFS_MAGIC)) {
+		printk(KERN_ERR "BAD FS: Magic nums dont match\n");
+		return -EPERM;
+	}
+	if(unlikely(sb_disk->block_size != LFS_DEFAULT_BS)) {
+		printk(KERN_ERR "BAD FS: Block size is not default\n");
+		return -EPERM;
+	}
+	printk(KERN_INFO "All good to go\n");
 	sb->s_magic = LFS_MAGIC; // A number that will id the fs
 	
 	inode = lfs_get_inode(sb, NULL, S_IFDIR, 0);
