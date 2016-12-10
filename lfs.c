@@ -156,6 +156,11 @@ static int lfs_iterate(struct file *filp, struct dir_context *ctx)
 	return 0;
 }
 
+const struct file_operations lfs_file_ops = {
+	.read = lfs_read,
+	.wriet = lfs_write,
+};
+
 const struct file_operations lfs_dir_ops = {
 	.owner = THIS_MODULE,
 	.iterate = lfs_iterate,
@@ -167,8 +172,12 @@ struct dentry *lfs_lookup(struct inode *parent_inode, struct dentry *child_dentr
 	// A dummy call back again
 	return NULL;
 }
+static int lfs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
+static int lfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
 
 static struct inode_operations lfs_inode_ops = {
+	.create = lfs_create,
+	.mkdir = lfs_mkdir,
 	.lookup = lfs_lookup,
 };
 
