@@ -114,31 +114,46 @@ exit:
 	return ret;
 }
 
-
-
-static int lfs_iterate(struct file *filp, void *dirent, filldir_t filldir)
+static int lfs_sb_get_object_count(struct super_block *vsb, unsigned int *out)
 {
-	loff_t pos = filp->f_pos;
+	struct lfs_super_block *sb = LSF_SB(vsb);
+	if(mutex_lock_interruptible(&lfs_inode_lock)) {
+		lfs_trace("lfs_inode_lock\n");
+		return -EINTR;
+	}
+	*out = sb->inodes_count;
+	mutex_unlock(&lfs_inode_lock);
+	return 0;
+}
+
+static int lfs_iterate(struct file *filp, struct dir_context *ctx)
+{
+	loff_t pos = ctx->pos;
 	struct inode *inode = filp->f_path.dentry->d_inode;
 	struct super_block *sb = inode->i_sb;
 	struct buffer_head *bh;
 	struct lfs_inode *lf_inode;
 	struct lfs_dir_record *record;
 	int i;
+	if(pos)
+		return 0;
 	printk(KERN_INFO "execing iterate");
-	lf_inode = inode->i_private;
+	lf_inode = LFS_INODE(inode);
 	if(unlikely(!S_ISDIR(lf_inode->mode))) {
 		printk(KERN_ERR "inode %u not a dir", lf_inode->inode_no);
 		return -ENOTDIR;
 	}
 	bh = sb_bread(sb, lf_inode->data_block_no);
+	BUG_ON(!bh);
 	record = (struct lfs_dir_record *) bh->b_data;
 	for(i = 0; i < lf_inode->dir_children_count; i++) {
-		filldir(dirent, record->filename, LFS_FILENAME_MAXLEN, pos, record->inode_no, DT_UNKNOWN);
+		dir_emit(ctx, record->filename, LFS_FILENAME_MAXLEN, record->inode_no, DT_UNKOWN);
+		ctx->pos += sizeof(struct lfs_dir_record);
 		pos += sizeof(struct lfs_dir_record);
 		record ++;
 	}
-	return 1;
+	brelse(bh);
+	return 0;
 }
 
 const struct file_operations lfs_dir_ops = {
@@ -161,16 +176,48 @@ struct lfs_inode *lfs_get_inode(struct super_block *sb, unsigned int inode_no)
 {
 	struct lfs_super_block *lfs_sb = LFS_SB(sb);
 	struct lfs_inode *lfs_inode = NULL;
+	struct lfs_inode *inode_buffer = NULL;
 	int i;
 	struct buffer_head *bh;
 	bh = sb_bread(sb, LFS_INODESTORE_BLOCK_NO);
+	BUG_ON(!bh);
 	lfs_inode = (struct lfs_inode *) bh->b_data;
 	for(i = 0; i < lfs_sb->inodes_count; i++) {
-		if(lfs_inode->inode_no == inode_no)
-			return lfs_inode;
+		if(lfs_inode->inode_no == inode_no) {
+			inode_buffer = kmem_cache_alloc(lfs_inode_cachep, GFP_KERNEL);
+			memcpy(inode_buffer, lfs_inode, sizeof(struct lfs_inode));
+			break;
+		}
 		lfs_inode++;
 	}
-	return NULL;
+	brelse(bh);
+	return inode_buffer;
+}
+
+ssize_t lfs_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos)
+{
+	struct lfs_inode *inode = LFS_INODE(filp->f_path.dentry.d_inode);
+	struct buffer_head *bh;
+	char *buffer;
+	int nbytes;
+
+	if(*ppos >= inode->file_size)
+		return 0;
+	bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, inode->data_block_no);
+	if(!bh) {
+		printk(KERN_ERR "Read blockno [%;;u] failed\n", inode->data_block_no);
+		return 0;
+	}
+	buffer = (char *)bh-b_data;
+	nbytes = min((size_t)inode->file_size, len);
+	if(copy_to_user(buf, buffer, nbytes)) {
+		brelse(bh);
+		printk(KERN_ERR "Could not copy contents to userspace\n");
+		return -EFAULT;
+	}
+	brelse(bh);
+	*ppos += nbytes;
+	return nbytes;
 }
 
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
