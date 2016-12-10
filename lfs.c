@@ -8,15 +8,44 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/namei.h>
 #include <linux/buffer_head.h>
+#include <linux/slab.h>
+#include <linux/random.h>
+#include <linux/version.h>
+#include <linux/jbd2.h>
+#include <linux/parser.h>
+#include <linux/blkdev.h>
+#include <linux/types.h>
 
-#include "lfs.h"
+#include "super.h"
 
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Muhammad Falak R Wani (mfrw)");
 
 static int lfs_iterate(struct file *filp, void *dirent, filldir_t filldir)
 {
-	// A dummy function for supporting ls
-	return 0;
+	loff_t pos = filp->f_pos;
+	struct inode *inode = filp->f_path.dentry->d_inode;
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh;
+	struct lfs_inode *lf_inode;
+	struct lfs_dir_record *record;
+	int i;
+	printk(KERN_INFO "execing iterate");
+	lf_inode = inode->i_private;
+	if(unlikely(!S_ISDIR(lf_inode->mode))) {
+		printk(KERN_ERR "inode %u not a dir", lf_inode->inode_no);
+		return -ENOTDIR;
+	}
+	bh = sb_bread(sb, lf_inode->data_block_no);
+	record = (struct lfs_dir_record *) bh->b_data;
+	for(i = 0; i < lf_inode->dir_children_count; i++) {
+		filldir(dirent, record->filename, LFS_FILENAME_MAXLEN, pos, record->inode_no, DT_UNKNOWN);
+		pos += sizeof(struct lfs_dir_record);
+		record ++;
+	}
+	return 1;
 }
 
 const struct file_operations lfs_dir_ops = {
@@ -62,7 +91,7 @@ struct inode *lfs_get_inode(struct super_block *sb,
 
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
 {
-	struct inode *inode;
+	struct inode *root_inode;
 	struct buffer_head *bh;
 	struct lfs_super_block *sb_disk;
 	bh = sb_bread(sb, 0);
@@ -79,10 +108,18 @@ int lfs_fill_super(struct super_block *sb, void *data, int silent)
 	printk(KERN_INFO "All good to go\n");
 	sb->s_magic = LFS_MAGIC; // A number that will id the fs
 	
-	inode = lfs_get_inode(sb, NULL, S_IFDIR, 0);
-	inode->i_op = &lfs_inode_ops;
-	inode->i_fop = &lfs_dir_ops;
-	sb->s_root = d_make_root(inode);
+	sb->s_fs_info = sb_disk;
+
+	root_inode = new_inode(sb);
+	root_inode->i_ino = LFS_ROOT_INODE_NO;
+	inode_init_owner(root_inode, NULL, S_IFDIR);
+	root_inode->i_sb = sb;
+	root_inode->i_op = &lfs_inode_ops;
+	root_inode->i_fop = &lfs_dir_ops;
+	root_inode->i_atime = root_inode->i_mtime = root_inode->i_ctime = CURRENT_TIME;
+	root_inode->i_private = &(sb_disk->root_inode);
+
+	sb->s_root = d_make_root(root_inode);
 	if(!sb->s_root)
 		return -ENOMEM;
 	return 0;
