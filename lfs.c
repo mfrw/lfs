@@ -23,6 +23,99 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Muhammad Falak R Wani (mfrw)");
 
+static DEFINE_MUTEX(lfs_sb_lock);
+static DEFINE_MUTEX(lfs_inode_lock);
+
+static DEFINE_MUTEX(lfs_directory_children_update_lock);
+
+static struct kmem_cache *lfs_inode_cachep;
+
+void lfs_sb_sync(struct super_block *vsb)
+{
+	struct buffer_head *bh;
+	struct lfs_super_block *sb = LFS_SB(vsb);
+	bh = sb_bread(vsb, LFS_SUPER_BLOCK_NO);
+	BUG_ON(!bh);
+
+	bh->b_data = (char *)sb;
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
+}
+
+struct lfs_inode *lfs_inode_search(struct super_block *sb,
+		struct lfs_inode *start,
+		struct lfs_inode *search)
+{
+	unsigned int count = 0;
+	while((start->inode_no != search->inode_no) && (count < LFS_SB(sb)->inodes_count)) {
+		count++;
+		start++;
+	}
+	if(start->inode_no == search->inode_no)
+		return start;
+	return NULL;
+}
+
+void lfs_inode_add(struct super_block *vsb, struct lfs_inode *inode)
+{
+	struct lfs_super_block *sb = LFS_SB(vsb);
+	struct buffer_head *bh;
+	struct lfs_inode *tmp;
+
+	if(mutex_lock_interruptible(&lfs_inode_lock)) {
+		lfs_trace("lfs_inode_lock");
+		return;
+	}
+	bh = sb_bread(vsb, LFS_INODESTORE_BLOCK_NO);
+	BUG_ON(!bh);
+	tmp = (struct lfs_inode *)bh->b_data;
+
+	if(mutex_lock_interruptible(&lfs_sb_lock)) {
+		mutex_unloc(lfs_inode_lock);
+		lfs_trace("lfs_sb_lock");
+		return;
+	}
+
+	tmp += sb->inodes_count;
+
+	memcpy(tmp, inode, sizeof(struct lfs_inode));
+	sb->inodes_count++;
+	mark_buffer_dirty(bh);
+	lfs_sb_sync(vsb);
+	brelse(bh);
+
+	mutex_unlock(&lfs_inode_lock);
+	mutex_unlock(&lfs_sb_lock);
+}
+
+int lfs_sb_get_freeblock(struct super_block *vsb, unsigned int *out)
+{
+	struct lfs_super_block *sb = LFS_SB(vsb);
+	int i, ret = 0;
+	if(mutex_lock_interruptible(&lfs_sb_lock)) {
+		lfs_trace("lfs_sb_lock\n");
+		ret = -EINTR;
+		return ret;
+	}
+	for(i = 3; i < LFS_MAX_FS_OBJS; i++)
+		if(sb->free_blocks & (1 << i))
+			break;
+	if(unlikely(i == LFS_MAX_FS_OBJS)) {
+		printk(KERN_ERR "MEM FULL");
+		ret = -ENOSPC;
+		goto exit:
+	}
+	*out = i;
+	sb->free_blocks &= ~(1 << i);
+	lfs_sb_sync(vsb);
+exit:
+	mutex_unlock(&lfs_sb_lock);
+	return ret;
+}
+
+
+
 static int lfs_iterate(struct file *filp, void *dirent, filldir_t filldir)
 {
 	loff_t pos = filp->f_pos;
