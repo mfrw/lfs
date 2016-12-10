@@ -172,14 +172,116 @@ struct dentry *lfs_lookup(struct inode *parent_inode, struct dentry *child_dentr
 	// A dummy call back again
 	return NULL;
 }
-static int lfs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
-static int lfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
+static int lfs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl)
+{
+	return 0;
+}
+static int lfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+{
+	return 0;
+}
 
 static struct inode_operations lfs_inode_ops = {
 	.create = lfs_create,
 	.mkdir = lfs_mkdir,
 	.lookup = lfs_lookup,
 };
+
+static int lfs_create_fs_object(struct inode *dir, struct dentry *dentry, umode_t mode)
+{
+	struct inode *inode;
+	struct lfs_inode *lfs_inode;
+	struct super_block *sb;
+	struct lfs_inode *parent_dir_node;
+	struct buffer_head *bh;
+	struct lfs_dir_record *dir_contents;
+	unsigned int count;
+	int ret;
+
+	if(mutex_lock_interruptible(&lfs_directory_children_update_lock)) {
+		lfs_trace("lfs_directory_children_update_lock");
+		return -EINTR;
+	}
+	sb = dir->i_sb;
+	ret = lfs_sb_get_object_count(sb, &count);
+	if(ret < 0) {
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return ret;
+	}
+	if(unlikely(count >= LFS_MAX_FS_OBJS)) {
+		printk(KERN_ERR "max objects reached\n");
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return -ENOSPC;
+	}
+	if(!S_ISDIR(mode) && !S_ISREG(mode)) {
+		printk(KERN_ERR "bad request");
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return -EINVAL;
+	}
+	inode = new_inode(sb);
+	if(!inode) {
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return -ENOMEM;
+	}
+	inode->i_sb = sb;
+	inode->i_op = &lfs_inode_ops;
+	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_no = (count + LFS_START_INO - LFS_RESERVED_INODES + 1);
+
+	lfs_inode = kmem_cache_alloc(lfs_inode_cachep, GFP_KERNEL);
+	lfs_inode->inode_no = inode->i_ino;
+	inode->i_private = lfs_inode;
+	lfs_inode->mode = mode;
+
+	if(S_ISDIR(mode)) {
+		printk(KERN_INFO "NEW dir req\n");
+		lfs_inode_>dir_children_count = 0;
+		inode->i_fop = &lfs_dir_ops;
+	} else if (S_ISREG(mode)) {
+		printk(KERN_INFO "new file req\n");
+		lfs_inode->file_size = 0;
+		inode->i_fop = &lfs_file_ops;
+	}
+	ret = lfs_sb_get_freeblock(sb, &lfs_inode->data_block_no);
+	if(ret < 0) {
+		printk(KERN_ERR "no free block");
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return ret;
+	}
+
+	lfs_inode_add(sb, lfs_inode);
+	parent_dir_node = LFS_INODE(dir);
+	bh = sb_bread(sb, parent_dir_node->data_block_no);
+	BUG_ON(!bh);
+	dir_contents = (struct lfs_dir_record *)bh->b_data;
+	dir_contents += parent_dir_node->dir_children_count;
+	dir_contents->inode_no = lfs_inode->inode_no;
+	strcpy(dir_contents->filename, dentry->d_name.name);
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
+
+	if(mutex_lock_interruptible(&lfs_inode_lock)) {
+		mutex_unlock(&lfs_directory_children_update_lock);
+		lfs_trace("lfs_inode_lock");
+		return -EINTR;
+	}
+
+	parent_dir_node->dir_children_count++;
+	ret = lfs_inode_save(sb, parent_dir_node);
+	if(ret) {
+		mutex_unlock(&lfs_inode_lock);
+		mutex_unlock(&lfs_directory_children_update_lock);
+		return ret;
+	}
+	mutex_unlock(&lfs_inode_lock);
+	mutex_unlock(&lfs_directory_children_update_lock);
+	inode_init_owner(inode, idr, mode);
+	d_add(dentry, inode);
+	return 0;
+}
+
+
 
 struct lfs_inode *lfs_get_inode(struct super_block *sb, unsigned int inode_no)
 {
