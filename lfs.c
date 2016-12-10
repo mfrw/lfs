@@ -169,16 +169,36 @@ const struct file_operations lfs_dir_ops = {
 struct dentry *lfs_lookup(struct inode *parent_inode, struct dentry *child_dentry,
 		unsigned int flags)
 {
-	// A dummy call back again
+	struct lfs_inode *parent = LFS_INODE(parent_inode);
+	struct super_block *sb = parent_inode->i_sb;
+	struct buffer_head *bh;
+	struct lfs_dir_record *record;
+	int i;
+	bh = sb_bread(sb, parent->data_block_no);
+	BUG_ON(!bh);
+	lfs_trace("lookup in: ino%llu, b=%llu\n", parent->inode_no, parent->data_block_no);
+	record = (struct lfs_dir_record *)bh->b_data;
+	for(i = 0; i < parent->dir_children_count; i++) {
+		lfs_trace("have file: %s (ino=%llu)\n", record->filename, record->inode_no);
+		if(!strcmp(record->filename, child_dentry->d_name.name)) {
+			struct inode *inode = lfs_iget(sb, record->inode_no);
+			inode_init_owner(inode, parent_inode, LFS_INODE(inode)->mode);
+			d_add(child_dentry, inode);
+			return NULL;
+		}
+		record++;
+	}
+	printk(KERN_ERR "No inode found for fname [%s]\n",child_dentry->d_name.name);
 	return NULL;
 }
+
 static int lfs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl)
 {
-	return 0;
+	return lfs_create_fs_object(dir, dentry, mode);
 }
 static int lfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
-	return 0;
+	return lfs_create_fs_object(dir, dentry, S_IFDIR|mode);
 }
 
 static struct inode_operations lfs_inode_ops = {
@@ -186,6 +206,27 @@ static struct inode_operations lfs_inode_ops = {
 	.mkdir = lfs_mkdir,
 	.lookup = lfs_lookup,
 };
+
+static struct inode *lfs_iget(struct super_block *sb, int ino)
+{
+	struct inode *inode;
+	struct lfs_inode *lfs_inode;
+	lfs_inode = lfs_get_inode(sb, ino);
+
+	inode = new_inode(sb);
+	inode->i_ino = ino;
+	inode->i_sb = sb;
+	inode->i_op = &lfs_inode_ops;
+	if(S_ISDIR(lfs_inode->mode))
+		inode->i_fop = &lfs_dir_ops;
+	else if(S_ISREG(lfs_inode->mode) || ino == LFS_JOURNAL_INODE_NO)
+		inode->i_fop = &lfs_file_ops;
+	else
+		printk(KERN_ERR "unknown inode type");
+	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+	inode->i_private = lfs_inode;
+	return inode;
+}
 
 static int lfs_create_fs_object(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
