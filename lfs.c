@@ -250,7 +250,72 @@ exit:
 	return ret;
 }
 
+ssize_t lfs_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos)
+{
+	struct inode *inode;
+	struct lfs_inode *lf_inode;
+	struct buffer_head *bh;
+	struct super_block *sb;
+	struct lfs_super_block *lfs_sb;
+	handle_t *handle;
+	char *buffer;
+	int ret;
 
+	sb = filp->f_path.dentry->d_inode->i_sb;
+	lfs_sb = LFS_SB(sb);
+	handle = jbd_journal_start(lfs_sb->journal, 1);
+	if(IS_ERR(handle))
+		return PRT_ERR(handle);
+	inode = filp->f_path.dentry->d_inode;
+	lf_inode = LFS_INODE(inode);
+	bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, lfs_inode->data_block_no);
+	if(!bh) {
+		printk(KERN_ERR "failed reading block [%llu]\n", lfs_inode->data_block_no);
+		return 0;
+	}
+	buffer = (char *)bh->b_data;
+
+	buffer += *ppos;
+
+	ret = jbd2_journal_get_write_access(handle, bh);
+	if(WARN_ON(ret)) {
+		brelse(bh);
+		lfs_trace("no write access for bh\n");
+		return ret;
+	}
+	if(copy_to_user(buffer, buf, len)) {
+		brelse(bh);
+		printk(KERN_ERR "error copying to userspace\n");
+		return -EFAULT;
+	}
+	*ppos += len;
+
+	ret = jbd2_journal_dirty_metadata(handle, bh);
+	if(WARN_ON(ret)) {
+		brelse(bh);
+		return ret;
+	}
+	handle->h_sync = 1;
+	ret = jbd2_journal_stop(handle);
+	if(WARN_ON(ret)) {
+		brelse(bh);
+		return ret;
+	}
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
+
+	if(mutex_lock_interruptible(&lfs_inode_lock)) {
+		lfs_trace("lfs_inode_lock");
+		return -EINTR;
+	}
+	lfs_inode->file_size = *ppos;
+	ret = lfs_inode_save(sb, lf_inode);
+	if(ret)
+		len = ret;
+	mutex_unlock(&lfs_inode_lock);
+	return len;
+}
 
 int lfs_fill_super(struct super_block *sb, void *data, int silent)
 {
