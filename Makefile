@@ -10,4 +10,4 @@ mkfs-lfs_SOURCES:
 	mkfs-lfs simple.h
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-	rm mkfs-lfs
+	rm -f mkfs-lfs
